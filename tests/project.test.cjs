@@ -38,7 +38,7 @@ function environment(initial=fixture()){
  const catalog=new Map([...initial.assets].map(([id,a])=>[id,{duration:a.duration,width:a.width,height:a.height}]));
  const context={E,Blob,File,TextEncoder,TextDecoder,Uint8Array,DataView,structuredClone,DOMException,
   project:initial.project,assets:initial.assets,music:initial.music,selected:'clip-2',head:1.2,dirty:true,
-  players:[],currentPreview:null,history:['old undo'],future:['old redo'],URL:{revokeObjectURL:url=>revoked.push(url)},
+  players:[],currentPreview:null,projectStorage:null,projectTemps:new Set(),cleanupTemp(){},history:['old undo'],future:['old redo'],URL:{revokeObjectURL:url=>revoked.push(url)},
   useBusy:async(title,fn)=>fn(),checkCancel(){},progress(){},say(){},
   assetFromFile:async(file,id)=>{decodedVideos.push({file,id});return {id,kind:'video',name:file.name,file,...catalog.get(id),url:'blob:opened-'+id};},
   decodeMusic:async file=>{decodedAudio.push(file);return {name:file.name,file,buffer:{duration:120}};},

@@ -10,7 +10,11 @@ Defaults: 130 BPM, two bars per clip, 24 fps, 2160 × 3840 portrait output. Add 
 
 ## Save your work
 
-Save project creates a `.jae` file containing the original videos, optional soundtrack, arrangement, and motion settings. Open restores it. Recovery copies use browser storage and may be cleared by the browser; a downloaded project is the lasting backup.
+Save project creates a `.jae` file containing the original videos, optional soundtrack, arrangement, and motion settings. Open restores it. Prepare portable project reads and checks the original bytes first, then offers Download or Save file in Ready to keep. The Save file action checks the written byte count and final file size. Ordinary browser downloads cannot be confirmed by the page, so check the downloaded size before closing.
+
+Save settings only creates a small `.jae-edit.json` backup without reading original media. Open it and choose the original videos and soundtrack to restore the edit. Reconnect original files repairs media access in the current edit. A settings snapshot is also stored locally before each complete save or render attempt when browser storage is available.
+
+Recovery copies use browser storage and may be cleared by the browser; a downloaded project is the lasting backup. If saving or rendering fails, keep the current tab open until a backup succeeds. Older open tabs do not receive deployed fixes automatically.
 
 Original clip audio is muted. An optional soundtrack retains its normal speed, and the metronome is preview-only. Keep the page visible during rendering. There is no optical-flow interpolation, HDR grading, or server rendering.
 
@@ -28,9 +32,20 @@ node tests/runtime.test.cjs
 node tests/app.test.cjs
 node tests/project.test.cjs
 node tests/player.test.cjs
+node tests/edit-backup.test.cjs
+node tests/storage.test.cjs
+node tests/save.test.cjs
 ```
 
 The build verifies the runtime SHA-256 hash. It also creates the corresponding unmodified Mediabunny source archive and MPL-2.0 license in `vendor/`. The legacy `bootstrap/` archive is retained for provenance.
+
+## Release 1.0.4
+
+- Fully read and stage portable/recovery projects before reporting them ready; verify native writes and reject empty output.
+- Retain private source copies for the live edit and Undo when the opened disk project is overwritten.
+- Add settings-only backup and restoration with original-file reconnection.
+- Check source access before rendering and keep failure details visible with recovery actions.
+- Keep unsaved-change protection after an unverified browser download or when an older prepared file does not contain the latest changes.
 
 ## Release 1.0.3
 

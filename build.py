@@ -18,7 +18,7 @@ shell = (ROOT / 'src/shell.html').read_text(encoding='utf-8')
 values = {
     '@@CSS@@': (ROOT / 'src/style.css').read_text(encoding='utf-8'),
     '@@RUNTIME@@': lib_path.read_text(encoding='utf-8'),
-    '@@APP@@': (ROOT / 'src/core.js').read_text(encoding='utf-8') + '\n' + (ROOT / 'src/app.js').read_text(encoding='utf-8'),
+    '@@APP@@': '\n'.join((ROOT / 'src' / name).read_text(encoding='utf-8') for name in ['core.js', 'edit-backup.js', 'file-storage.js', 'app.js']),
 }
 for key, value in values.items():
     if key in ('@@RUNTIME@@', '@@APP@@'):

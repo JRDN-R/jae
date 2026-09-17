@@ -1,5 +1,15 @@
 # Release verification
 
+## Release 1.0.4
+
+All 50 test groups pass (42 node:test groups plus eight core groups). The build and HTML ID/reference checks pass. An additional old-tab rescue check recovered the in-memory settings header after its real disk-backed media became unreadable.
+
+The save fix reproduces a real disk-backed Blob failure: replacing its backing file leaves the advertised size nonzero while reads fail. Tests verify fully detached memory and private-file copies, exact streamed byte counts, cancellation, failed writes/closes, readback size checks, cleanup, and named source-read errors. Settings-only backups preserve every edit and shared source reference without reading media, and reject missing or ambiguous original-file matches.
+
+Native Save file runs from a fresh button click after the project has been prepared. Browser Download and Share actions retain unsaved-change protection because the application cannot verify that the browser actually saved their output. Prepared native saves clear it only if the saved snapshot still matches the current edit, sources, and soundtrack.
+
+The existing browser session remained unresponsive; this release has no new end-to-end browser or physical-device certification. Tests use real disk-backed Blobs and isolated application functions with browser storage/decoding fixtures. The user's exact browser/device failure remains unconfirmed. A zero-byte output is rejected; successful rendering still depends on supported codecs and device resources.
+
 ## Release 1.0.2
 
 The 18 existing timing, preview, metronome, decoder, and project-file test groups pass after the player changes. Seven additional groups in `player.test.cjs` cover double-tap recognition, ignored single/drag/cancel/modified gestures, playback-preserving skips, timeline boundaries, busy/modal guards, viewport bounds, and canceled or superseded asynchronous audio startup. Total: 25 passing groups.

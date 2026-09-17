@@ -6,8 +6,8 @@ const uid=()=>globalThis.crypto?.randomUUID?.()||`jae-${Date.now().toString(36)}
 let project=E.defaults(), assets=new Map(), selected=null, music=null, dirty=false, playing=false, loop=true, metronome=false, head=0;
 let audioCtx=null, masterGain=null, musicNode=null, musicGain=null, audioEpoch=0, perfEpoch=0, metroTimer=0, nextClick=0, lastLoop=-1, currentPreview=null;
 let history=[],future=[],sliderBefore=null,busy=false,cancelled=false,activeOutput=null,wakeLock=null,toastTimer=0,checkVersion=0,capabilityOK=false;
-let miniPlayer=null,playRequest=0,playPending=false;
-const clicks=new Set(), downloadItems=[], MAX_CLIPS=20;
+let miniPlayer=null,playRequest=0,playPending=false,projectStorage=null,pendingRelink=null;
+const clicks=new Set(), downloadItems=[], projectTemps=new Set(), MAX_CLIPS=20;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const fmt=(x,d=2)=>Number(x).toFixed(d), bytes=n=>n<1048576?`${fmt(n/1024,1)} KB`:`${fmt(n/1048576,1)} MB`;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -41,7 +41,7 @@ function render(){
  $('clipList').innerHTML=project.clips.map((c,i)=>{const a=assets.get(c.asset),name=a?.name||'Missing source';return `<div class="clip-row"><button type="button" class="clip-item${c.id===selected?' selected':''}" draggable="true" data-id="${esc(c.id)}" aria-pressed="${c.id===selected}" title="${esc(name)}"><img src="${a?.thumb||''}" alt=""><span class="clip-text"><b>${esc(name)}</b><small>${fmt(c.bars)} bars · ${fmt(E.duration(c,project))}s</small></span><span class="index">${String(i+1).padStart(2,'0')}</span></button><button type="button" class="clip-delete quiet danger" draggable="false" data-delete="${esc(c.id)}" title="Delete clip ${i+1}" aria-label="Delete clip ${i+1}, ${esc(name)}"><span aria-hidden="true">×</span></button></div>`;}).join('');
  const enabled=project.clips.length>0;
  for(const id of ['playBtn','backBtn','forwardBtn','exportBtn','equalBtn','shuffleBtn'])$(id).disabled=!enabled;
- $('downloadProjectBtn').disabled=!enabled;$('localSaveBtn').disabled=!enabled;$('addBtn').disabled=project.clips.length>=20;$('emptyFrame').hidden=enabled;$('timelineEmpty').hidden=enabled;$('playhead').hidden=!enabled;
+ $('downloadProjectBtn').disabled=!enabled;$('localSaveBtn').disabled=!enabled;$('saveEditsBtn').disabled=!enabled;$('reconnectBtn').disabled=!enabled;$('addBtn').disabled=project.clips.length>=20;$('emptyFrame').hidden=enabled;$('timelineEmpty').hidden=enabled;$('playhead').hidden=!enabled;
  $('undoBtn').disabled=!history.length;$('redoBtn').disabled=!future.length;
  for(const id of ['moveLeftBtn','moveRightBtn','duplicateBtn','deleteBtn'])$(id).disabled=!selectedClip();
  $('scrubber').max=total()||1;$('totalTime').textContent=`${fmt(total())} s`;
@@ -184,7 +184,7 @@ async function addVideos(files){if(!files.length)return;const room=MAX_CLIPS-pro
  progress(1,`${list.length-rejected.length} clips added.`);});
  if(rejected.length)say(rejected.join(' '),true);else say('Footage is ready. Press play to feel the timing.',true);
 }
-function releaseAssets(){players.forEach(v=>{v.pause();v.removeAttribute('src');v.load();delete v._asset;});currentPreview=null;for(const a of assets.values())if(a.url)URL.revokeObjectURL(a.url);assets=new Map();music=null;history=[];future=[];}
+function releaseAssets(){players.forEach(v=>{v.pause();v.removeAttribute('src');v.load();delete v._asset;});currentPreview=null;for(const a of assets.values())if(a.url)URL.revokeObjectURL(a.url);assets=new Map();music=null;history=[];future=[];projectStorage=null;for(const temp of projectTemps)cleanupTemp(temp);projectTemps.clear();}
 function newProject(){if(busy)return;if(dirty&&!confirm('Start a new project? Save a .jae backup first to keep the current edit.'))return;pause();releaseAssets();project=E.defaults();selected=null;head=0;dirty=false;render();say('A fresh rhythm.');}
 function loadDemo(){if(busy)return;if(project.clips.length&&!confirm('Replace the current arrangement with the motion demo? Save first to keep your edit.'))return;pause();releaseAssets();project=E.defaults();for(let i=0;i<3;i++){const a=demoAsset(i);assets.set(a.id,a);const c=E.makeClip(a.id,uid());c.trimOut=a.duration;c.preset=['subtle','swoop','punch'][i];Object.assign(c,E.presets[c.preset]);project.clips.push(c);}selected=project.clips[0].id;head=0;dirty=true;render();say('Three procedural clips. Try the metronome and adjust their motion.',true);}
 async function decodeMusic(file){if(file.size>80*1048576)throw Error('Choose a soundtrack under 80 MB. This keeps decoded audio manageable on mobile.');await initAudio();if(!audioCtx)throw Error('This browser has no audio decoding support.');const buffer=await audioCtx.decodeAudioData(await file.arrayBuffer());if(buffer.duration>300)throw Error('Choose a soundtrack no longer than five minutes. Trim the audio first.');return {id:uid(),name:file.name,file,buffer};}
@@ -213,20 +213,56 @@ async function openPortable(file){
  }catch(e){for(const a of staged.values())if(a.url)URL.revokeObjectURL(a.url);throw e;}});
  say('Project reopened with its original media and motion settings.',true);
 }
-function addDownload(blob,name,temp=null){const url=URL.createObjectURL(blob),id=uid(),row=document.createElement('div');row.className='download-row';row.innerHTML=`<div class="download-text">${esc(name)}<small>${bytes(blob.size)} · stays on this device</small></div>`;
+function cleanupTemp(temp){if(temp&&projectStorage!==temp&&![...assets.values()].some(a=>a._storage===temp)&&music?._storage!==temp&&!downloadItems.some(item=>item.temp===temp)){projectTemps.delete(temp);globalThis.JAEFiles.disposeTemp(temp).catch(()=>{});}}
+function showDownloads(){ $('downloads').scrollIntoView({behavior:'smooth',block:'center'}); }
+function operationFailed(error){console.error(error);if(error?.name==='AbortError'){say('Operation cancelled. Your edit is still open.',true);return;}
+ $('operationErrorMessage').textContent=error?.message||String(error);$('errorSaveEdits').disabled=!project.clips.length;$('errorReconnect').disabled=!project.clips.length;
+ if(!document.querySelector('dialog[open]'))$('operationErrorDialog').showModal();else say(error?.message||String(error),true);}
+function rememberEdits(){const manifest=globalThis.JAEBackup.serialize(project,assets,music),json=JSON.stringify(manifest);let stored=false;try{localStorage.setItem('jae-edit-recovery',json);stored=true;}catch{}return {manifest,json,stored};}
+function currentProjectKey(){try{return JSON.stringify({edit:globalThis.JAEBackup.serialize(project,assets,music),musicId:music?.id||null});}catch{return null;}}
+function saveEdits(){const {json,stored}=rememberEdits();for(const id of ['saveDialog','operationErrorDialog'])$(id).close();const item=addDownload(new Blob([json],{type:'application/json'}),safeName(project.name)+'.jae-edit.json');item.a.click();showDownloads();say(`${stored?'Settings backed up on this device. ':''}Check the downloaded settings file. Keep your original videos and soundtrack to reopen it.`,true);}
+function savedEdits(){try{const json=localStorage.getItem('jae-edit-recovery');return json?globalThis.JAEBackup.parse(JSON.parse(json)):null;}catch{return null;}}
+async function beginRelink(manifest){pendingRelink=globalThis.JAEBackup.parse(manifest);for(const id of ['saveDialog','operationErrorDialog'])$(id).close();
+ const needed=[...pendingRelink.assets.filter(a=>a.kind==='video'),...(pendingRelink.music?[pendingRelink.music]:[])];
+ if(!needed.length){const pending=pendingRelink;pendingRelink=null;await restoreEdits(pending,[]);return;}
+ $('relinkFiles').textContent=needed.map(a=>`${a.name} (${bytes(a.size)})`).join('\n');$('relinkError').textContent='';$('relinkDialog').showModal();}
+async function restoreEdits(manifest,files){const m=globalThis.JAEBackup.parse(manifest),matched=globalThis.JAEBackup.matchFiles(m,files),p=E.normalizeProject(m.project),staged=new Map();let stagedMusic=null;
+ $('relinkDialog').close();await useBusy('Reconnecting your original files',async()=>{try{for(let i=0;i<m.assets.length;i++){checkCancel();const e=m.assets[i];progress(i/(m.assets.length+1),`Reading ${e.name}`);const a=e.kind==='demo'?demoAsset(e.seed,e.id):await assetFromFile(matched.assets.get(e.id),e.id);staged.set(e.id,a);}
+ if(matched.music)stagedMusic=await decodeMusic(matched.music);checkCancel();p.clips=p.clips.map(c=>E.normalizeClip(c,staged.get(c.asset).duration));
+ releaseAssets();assets=staged;music=stagedMusic;project=p;selected=p.clips[0].id;head=0;dirty=true;
+ }catch(e){for(const a of staged.values())if(a.url)URL.revokeObjectURL(a.url);throw e;}});say('Your edit is restored with its original files. You can save a complete project or render again.',true);}
+async function openProject(file){if(/\.json$/i.test(file.name)){if(file.size>16*1048576)throw Error('This settings backup is too large.');await beginRelink(JSON.parse(await file.text()));}else await openPortable(file);}
+async function checkSources(clips=project.clips,includeMusic=true){for(const id of new Set(clips.map(c=>c.asset))){checkCancel();const a=assets.get(id);if(!a)throw Error('An original clip is missing. Reconnect your original files.');if(a.kind==='video')await globalThis.JAEFiles.assertReadable(a.file,a.name);}if(includeMusic&&music)await globalThis.JAEFiles.assertReadable(music.file,music.name);}
+function sourceReadFailure(name,error){if(error?.name==='AbortError')return error;const help=['NotReadableError','NetworkError'].includes(error?.name)?' Save settings only, then reconnect the original files.':'';return new Error(`${name}: ${error?.message||error}.${help}`,{cause:error});}
+// Keep a private, fully read copy behind live media after saving. Replacing the
+// opened .jae on disk must not invalidate the files used by the current edit.
+async function adoptProjectBlob(blob,temp){const header=await blob.slice(0,12).arrayBuffer(),len=new DataView(header).getUint32(8,true),m=JSON.parse(await blob.slice(12,12+len).text()),start=12+len;
+ const fileFor=e=>new File([blob.slice(start+e.offset,start+e.offset+e.size)],e.name,{type:e.type,lastModified:e.lastModified});
+ const replacements=m.assets.filter(e=>e.kind==='video').map(e=>({asset:assets.get(e.id),file:fileFor(e)})),audio=m.music?fileFor(m.music):null;
+ try{for(const replacement of replacements){if(!replacement.asset)throw Error('The edit changed while preparing its sources. Try saving again.');replacement.url=URL.createObjectURL(replacement.file);}}catch(e){for(const replacement of replacements)if(replacement.url)URL.revokeObjectURL(replacement.url);throw e;}
+ const previous=projectStorage;projectStorage=temp;if(temp)projectTemps.add(temp);
+ players.forEach(v=>{v.pause();v.removeAttribute('src');v.load();delete v._asset;});currentPreview=null;
+ for(const {asset,file,url} of replacements){if(asset.url)URL.revokeObjectURL(asset.url);asset.file=file;asset._storage=temp;asset.url=url;}if(audio&&music){music.file=audio;music._storage=temp;}cleanupTemp(previous);
+}
+function addDownload(blob,name,temp=null,projectKey=null){if(!blob?.size)throw Error('No file bytes were produced. Your edit is still open.');const url=URL.createObjectURL(blob),id=uid(),row=document.createElement('div');row.className='download-row';row.innerHTML=`<div class="download-text">${esc(name)}<small>${bytes(blob.size)} · ready on this device</small></div>`;
  const a=document.createElement('a');a.href=url;a.download=name;a.textContent='Download';row.append(a);
  const share=document.createElement('button');share.className='quiet small';share.textContent='Share / Save';const file=new File([blob],name,{type:blob.type||'application/octet-stream'});
- if(navigator.canShare?.({files:[file]})){share.addEventListener('click',async()=>{try{await navigator.share({files:[file],title:name});}catch(e){if(e.name!=='AbortError')fail(e);}});row.append(share);}
- $('downloadList').append(row);$('downloads').hidden=false;downloadItems.push({id,url,blob,name,temp,row});return {url,a,blob,name};}
-async function clearDownloads(){for(const item of downloadItems){URL.revokeObjectURL(item.url);if(item.temp){try{await item.temp.root.removeEntry(item.temp.name);}catch{}}item.row.remove();}downloadItems.length=0;$('downloads').hidden=true;}
-async function saveProject(){const blob=portableBlob(),name=safeName(project.name)+'.jae';$('saveDialog').close();
- if(window.showSaveFilePicker){let handle;try{handle=await showSaveFilePicker({suggestedName:name,types:[{description:'JAE project',accept:{'application/octet-stream':['.jae']}}]});}catch(e){if(e.name==='AbortError')return;throw e;}
- await useBusy('Saving your complete project',async()=>{const writer=await handle.createWritable();try{const reader=blob.stream().getReader();let n=0;while(true){checkCancel();const {done,value}=await reader.read();if(done)break;await writer.write(value);n+=value.byteLength;progress(n/blob.size,`${bytes(n)} / ${bytes(blob.size)}`);}await writer.close();}catch(e){await writer.abort().catch(()=>{});throw e;}});
- }else{const d=addDownload(blob,name);d.a.click();}
- dirty=false;say('Project file prepared. Keep the downloaded .jae file as your backup.',true);
+ let canShare=false;try{canShare=!!navigator.canShare?.({files:[file]});}catch{}if(canShare){share.addEventListener('click',async()=>{try{await navigator.share({files:[file],title:name});}catch(e){if(e.name!=='AbortError')operationFailed(e);}});row.append(share);}
+ if(window.showSaveFilePicker){const save=document.createElement('button');save.className='quiet small';save.textContent='Save file…';save.addEventListener('click',async()=>{try{const handle=await window.showSaveFilePicker({suggestedName:name});await useBusy('Writing your file',()=>globalThis.JAEFiles.writeBlob(handle,blob,{checkCancel,onProgress:(n,size)=>progress(n/size,`${bytes(n)} / ${bytes(size)}`)}));if(projectKey&&currentProjectKey()===projectKey)dirty=false;say(`Saved ${name} · ${bytes(blob.size)} verified.`,true);}catch(e){operationFailed(e);}});row.append(save);}
+ $('downloadList').append(row);$('downloads').hidden=false;downloadItems.push({id,url,blob,name,temp,row,projectKey});return {url,a,blob,name};}
+async function clearDownloads(){for(const item of downloadItems.splice(0)){URL.revokeObjectURL(item.url);cleanupTemp(item.temp);item.row.remove();}$('downloads').hidden=true;}
+async function saveProject(){let prepared=null;try{rememberEdits();const blob=portableBlob(),name=safeName(project.name)+'.jae',key=currentProjectKey();$('saveDialog').close();
+ await useBusy('Preparing your complete project',async()=>{await checkSources();prepared=await globalThis.JAEFiles.stageBlob(blob,{checkCancel,onProgress:(n,size)=>progress(n/size,`${bytes(n)} / ${bytes(size)}`)});checkCancel();await adoptProjectBlob(prepared.blob,prepared.temp);addDownload(prepared.blob,name,prepared.temp,key);});
+ showDownloads();say('Project ready. Choose Download or Save file below, and check that the saved file has the displayed size.',true);
+ }catch(e){cleanupTemp(prepared?.temp);operationFailed(e);}
 }
 async function db(){return new Promise((resolve,reject)=>{const r=indexedDB.open('just-animate-everything',1);r.onupgradeneeded=()=>r.result.createObjectStore('recovery');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
-async function recovery(save){if(!indexedDB)throw Error('This browser does not provide local project storage.');if(save){const blob=portableBlob();$('saveDialog').close();await useBusy('Saving local recovery',async()=>{await navigator.storage?.persist?.().catch(()=>false);const estimate=await navigator.storage?.estimate?.();if(estimate?.quota&&blob.size>estimate.quota-estimate.usage)throw Error('Not enough browser storage. Download a portable project instead.');const database=await db();try{await new Promise((resolve,reject)=>{const tx=database.transaction('recovery','readwrite');tx.objectStore('recovery').put(blob,'last');tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||Error('Recovery storage failed.'));});}finally{database.close();}}, {canCancel:false});say('Recovery copy saved on this device. Download a .jae file for a permanent backup.',true);
+async function recovery(save){if(!globalThis.indexedDB)throw Error('This browser does not provide local project storage.');if(save){rememberEdits();const blob=portableBlob();$('saveDialog').close();let prepared=null;
+ try{await useBusy('Saving local recovery',async()=>{await navigator.storage?.persist?.().catch(()=>false);const estimate=await navigator.storage?.estimate?.();if(estimate?.quota&&blob.size*2>estimate.quota-(estimate.usage||0))throw Error('Not enough browser storage for a complete recovery copy. Save settings only, or prepare a portable project.');
+ await checkSources();prepared=await globalThis.JAEFiles.stageBlob(blob,{onProgress:(n,size)=>progress(n/size,`${bytes(n)} / ${bytes(size)}`)});
+ const database=await db();try{await new Promise((resolve,reject)=>{const tx=database.transaction('recovery','readwrite');tx.objectStore('recovery').put(prepared.blob,'last');tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||Error('Recovery storage failed.'));});}finally{database.close();}
+ await adoptProjectBlob(prepared.blob,prepared.temp);}, {canCancel:false});say('Recovery copy saved on this device. Keep a downloaded .jae file as a permanent backup.',true);
+ }catch(e){cleanupTemp(prepared?.temp);throw e;}
  }else{const database=await db();let blob;try{blob=await new Promise((resolve,reject)=>{const r=database.transaction('recovery').objectStore('recovery').get('last');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}finally{database.close();}if(!blob)throw Error('No recovery copy has been saved in this browser.');if(dirty&&!confirm('Replace this edit with the saved recovery copy?'))return;$('saveDialog').close();await openPortable(blob);}}
 function bitrate(p){const d=E.dimensions(p),q={standard:.075,high:.16,max:.24}[p.quality];return Math.round(E.clamp(d.width*d.height*p.fps*q,2000000,100000000));}
 function syncExportUI(){for(const id of ['resolution','aspect','fps','quality','format'])$(id).value=project[id];$('exportLoops').disabled=$('exportScope').value!=='all';}
@@ -265,10 +301,10 @@ async function renderJob(p,job,ordinal,count){const plan=E.frameGroups(p,job.cli
  const sample=new M.AudioSample({format:'f32',sampleRate:sr,numberOfChannels:2,timestamp:audioFrame/sr,data});try{await audioSource.add(sample);}finally{sample.close();}audioFrame+=n;}}
  await output.start();let rendered=0,startTime=performance.now();
  for(const group of plan.groups){checkCancel();const c=group.clip,a=assets.get(c.asset);if(!a)throw Error('An original clip is missing.');
- if(a.kind!=='demo'){input=new M.Input({source:new M.BlobSource(a.file),formats:M.ALL_FORMATS});const track=await input.getPrimaryVideoTrack();if(!track||!await track.canDecode())throw Error(`${a.name}: decoding unavailable.`);const first=await track.getFirstTimestamp();const sink=new M.CanvasSink(track,{poolSize:1});
- iterator=sink.canvasesAtTimestamps((function*(){for(let k=group.first;k<group.last;k++)yield first+E.motion(c,p,k/p.fps-group.start).time;})());}
+ if(a.kind!=='demo'){try{input=new M.Input({source:new M.BlobSource(a.file),formats:M.ALL_FORMATS});const track=await input.getPrimaryVideoTrack();if(!track||!await track.canDecode())throw Error('Decoding unavailable.');const first=await track.getFirstTimestamp();const sink=new M.CanvasSink(track,{poolSize:1});
+ iterator=sink.canvasesAtTimestamps((function*(){for(let k=group.first;k<group.last;k++)yield first+E.motion(c,p,k/p.fps-group.start).time;})());}catch(e){throw sourceReadFailure(a.name,e);}}
  try{for(let k=group.first;k<group.last;k++){checkCancel();await waitVisible();const t=k/p.fps,local=t-group.start,dt=Math.min(1/p.fps,plan.total-t);let image;
- if(a.kind==='demo')image=paintDemo(a,E.motion(c,p,local).time);else{const item=await iterator.next();if(item.done||!item.value)throw Error(`${a.name}: a requested source frame could not be decoded.`);lastWrapped=item.value;image=item.value.canvas;}
+ if(a.kind==='demo')image=paintDemo(a,E.motion(c,p,local).time);else{let item;try{item=await iterator.next();}catch(e){throw sourceReadFailure(a.name,e);}if(item.done||!item.value)throw Error(`${a.name}: a requested source frame could not be decoded.`);lastWrapped=item.value;image=item.value.canvas;}
  drawMedia(ctx,image,c,p,local);await writeAudio(Math.min(plan.total,t+dt));await video.add(t,dt,{keyFrame:k===group.first||k%(p.fps*2)===0});rendered++;
  if(rendered%4===0||rendered===plan.count){const elapsed=(performance.now()-startTime)/1000,remaining=rendered?elapsed*(plan.count-rendered)/rendered:0;progress((ordinal+rendered/plan.count)/count,`File ${ordinal+1}/${count} · frame ${rendered}/${plan.count} · ${fmt(rendered/plan.count*100,0)}% · ~${fmt(remaining,0)}s remaining`);await sleep(0);}}
  }finally{if(iterator){await iterator.return().catch(()=>{});iterator=null;}if(input){input.dispose();input=null;}if(lastWrapped){lastWrapped.canvas.width=1;lastWrapped.canvas.height=1;lastWrapped=null;}}}
@@ -277,9 +313,9 @@ async function renderJob(p,job,ordinal,count){const plan=E.frameGroups(p,job.cli
  }finally{if(iterator)await iterator.return().catch(()=>{});input?.dispose();if(!done){await output.cancel().catch(()=>{});if(storage.temp)await storage.temp.root.removeEntry(storage.temp.name).catch(()=>{});}canvas.width=1;canvas.height=1;activeOutput=null;}
 }
 async function startExport(){await checkSupport();if(!capabilityOK)return;const p=structuredClone(project),jobs=exportPlan(p);$('exportDialog').close();let complete=0;
- try{await useBusy('Rendering your movement',async()=>{for(let i=0;i<jobs.length;i++){checkCancel();const result=await renderJob(p,jobs[i],i,jobs.length);complete++;if(jobs.length===1)result.a.click();}progress(1,'Your rendered files are ready.');});
+ try{rememberEdits();await useBusy('Rendering your movement',async()=>{progress(0,'Checking original files…');await checkSources(jobs.flatMap(job=>job.clips),false);for(let i=0;i<jobs.length;i++){checkCancel();const result=await renderJob(p,jobs[i],i,jobs.length);complete++;if(jobs.length===1)result.a.click();}progress(1,'Your rendered files are ready.');});
  say(`${complete} rendered file${complete===1?' is':'s are'} ready in “Ready to keep”.`,true);$('downloads').scrollIntoView({behavior:'smooth',block:'nearest'});
- }catch(e){if(cancelled||e.name==='AbortError')say(`Export cancelled. ${complete?`${complete} completed file(s) remain available.`:'Your project is unchanged.'}`,true);else fail(e);}}
+ }catch(e){if(cancelled||e.name==='AbortError')say(`Export cancelled. ${complete?`${complete} completed file(s) remain available.`:'Your project is unchanged.'}`,true);else operationFailed(e);}}
 // Keep touch recognition separate from media state so a scroll or drag never
 // becomes a seek. These are the same double-tap thresholds used by JAA.
 function previewTapGestures({rectangle,onSkip,enabled,now=()=>performance.now()}){let pointer=null,tap=null;
@@ -345,9 +381,14 @@ function createMiniPlayer(){const stage=$('stage'),frame=$('frame'),canvas=$('pr
 listen('addBtn','click',()=>$('videoInput').click());listen('emptyAdd','click',()=>$('videoInput').click());
 listen('videoInput','change',async e=>{const files=[...e.target.files];e.target.value='';await addVideos(files);});
 listen('openBtn','click',()=>{if(!busy)$('projectInput').click();});
-listen('projectInput','change',async e=>{const f=e.target.files[0];e.target.value='';if(f&&(!dirty||confirm('Replace the current project? Save first to keep this edit.')))await openPortable(f);});
-listen('saveBtn','click',()=>{pause();$('projectSize').textContent=project.clips.length?`Approximately ${bytes(portableBlob().size)} · original media included`:'No open project. Restore a saved recovery copy below.';$('saveDialog').showModal();});
-listen('downloadProjectBtn','click',saveProject);listen('localSaveBtn','click',()=>recovery(true));listen('localOpenBtn','click',()=>recovery(false));
+listen('projectInput','change',async e=>{const f=e.target.files[0];e.target.value='';if(f&&(!dirty||confirm('Replace the current project? Save first to keep this edit.')))try{await openProject(f);}catch(err){operationFailed(err);}});
+listen('saveBtn','click',()=>{pause();let description='No open project. Restore a saved recovery copy below.';if(project.clips.length){try{description=`Approximately ${bytes(portableBlob().size)} · original media included`;}catch{description='Some source files are unavailable. Save settings only to keep your edit.';}}$('projectSize').textContent=description;$('restoreEditsBtn').disabled=!savedEdits();$('saveDialog').showModal();});
+listen('downloadProjectBtn','click',saveProject);listen('localSaveBtn','click',async()=>{try{await recovery(true);}catch(e){operationFailed(e);}});listen('localOpenBtn','click',async()=>{try{await recovery(false);}catch(e){operationFailed(e);}});
+listen('saveEditsBtn','click',saveEdits);listen('errorSaveEdits','click',saveEdits);
+for(const id of ['reconnectBtn','errorReconnect'])listen(id,'click',()=>beginRelink(globalThis.JAEBackup.serialize(project,assets,music)));
+listen('restoreEditsBtn','click',()=>{const m=savedEdits();if(m&&(!dirty||confirm('Restore the saved settings? Save your current edit first.')))return beginRelink(m);});
+listen('chooseRelinkFiles','click',()=>$('relinkInput').click());
+listen('relinkInput','change',async e=>{const files=[...e.target.files];e.target.value='';if(!files.length||!pendingRelink)return;const m=pendingRelink;try{await restoreEdits(m,files);pendingRelink=null;}catch(err){if($('relinkDialog').open)$('relinkError').textContent=err.message;else operationFailed(err);}});
 listen('exportBtn','click',()=>openExport());listen('specBtn','click',()=>{if(project.clips.length)openExport();else{$('exportScope').value='all';syncExportUI();$('exportDialog').showModal();checkSupport();}});
 listen('exportClipBtn','click',()=>openExport('selected'));listen('startExport','click',startExport);
 for(const id of ['helpBtn','aboutBtn'])listen(id,'click',()=>$('helpDialog').showModal());

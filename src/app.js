@@ -6,6 +6,7 @@ const uid=()=>globalThis.crypto?.randomUUID?.()||`jae-${Date.now().toString(36)}
 let project=E.defaults(), assets=new Map(), selected=null, music=null, dirty=false, playing=false, loop=true, metronome=false, head=0;
 let audioCtx=null, masterGain=null, musicNode=null, musicGain=null, audioEpoch=0, perfEpoch=0, metroTimer=0, nextClick=0, lastLoop=-1, currentPreview=null;
 let history=[],future=[],sliderBefore=null,busy=false,cancelled=false,activeOutput=null,wakeLock=null,toastTimer=0,checkVersion=0,capabilityOK=false;
+let miniPlayer=null,playRequest=0,playPending=false;
 const clicks=new Set(), downloadItems=[], MAX_CLIPS=20;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const fmt=(x,d=2)=>Number(x).toFixed(d), bytes=n=>n<1048576?`${fmt(n/1024,1)} KB`:`${fmt(n/1048576,1)} MB`;
@@ -47,7 +48,7 @@ function render(){
  $('frame').style.aspectRatio=`${dim.width} / ${dim.height}`;$('frame').style.width=ratio<=1?base+'px':Math.min(600,$('stage').clientWidth-16)+'px';
  const pv=$('preview'),pw=ratio<=1?432:768,ph=Math.round(pw/ratio);if(pv.width!==pw||pv.height!==ph){pv.width=pw;pv.height=ph;}
  $('beatLights').innerHTML=Array.from({length:project.meter},()=>'<i></i>').join('');
- renderInspector();renderTimeline();drawPreview();updateTransport();
+ renderInspector();renderTimeline();drawPreview();updateTransport();miniPlayer?.sync();
 }
 function renderInspector(){const c=selectedClip(),a=c&&assets.get(c.asset);$('clipControls').hidden=!c;$('clipControls').disabled=!c;$('inspectorEmpty').hidden=!!c;
  $('selectedNumber').textContent=c?`CLIP ${String(project.clips.indexOf(c)+1).padStart(2,'0')}`:'NO CLIP';if(!c)return;
@@ -81,6 +82,7 @@ function updateTransport(){const t=Math.max(0,head),bs=E.secondsPerBeat(project)
  $('playBtn').textContent=playing?'Ⅱ':'▶';$('playBtn').setAttribute('aria-label',playing?'Pause':'Play');
  [...$('beatLights').children].forEach((el,i)=>el.classList.toggle('lit',playing&&i===Math.floor(b%project.meter)&&b%1<.38));
  const loc=E.locate(project,t);document.querySelectorAll('.clip-item').forEach(el=>el.classList.toggle('playing',playing&&el.dataset.id===loc?.clip.id));
+ miniPlayer?.draw();
 }
 const players=Array.from({length:2},()=>{const v=document.createElement('video');v.muted=true;v.playsInline=true;v.setAttribute('playsinline','');v.preload='auto';v.style.cssText='position:fixed;width:1px;height:1px;left:-10px;top:0;opacity:0;pointer-events:none';document.body.append(v);
  // Metadata can arrive after the first paused render. A completed seek must also
@@ -137,11 +139,16 @@ function scheduleMetronome(){if(!playing||!audioCtx)return;const grid=+$('metroG
  // Restart the beat grid at each loop boundary, including partial bars in 3/4
  // and 6/4 whose duration is not a whole number of the chosen subdivision.
  while(true){const cycle=Math.floor(nextClick/steps),step=nextClick%steps,position=cycle*T+step*dt,at=audioEpoch+position;if(at>=audioCtx.currentTime+.12||(!loop&&position>=T))break;if(at>=audioCtx.currentTime-.003)clickAt(Math.max(at,audioCtx.currentTime),step*grid);nextClick++;}}
-async function play(){if(busy||!project.clips.length)return;if(playing){pause();return;}await initAudio();if(head>=total()-.0001)head=0;
+function startPlayback(){
  audioEpoch=(audioCtx?.currentTime||0)-head;perfEpoch=performance.now()/1000-head;playing=true;lastLoop=0;
  resetMetronome(head);startMusic(head);metroTimer=setInterval(scheduleMetronome,25);scheduleMetronome();updateTransport();}
-function pause(){if(playing){let n=nowHead();head=loop&&total()?n%total():Math.min(n,total());}playing=false;clearInterval(metroTimer);for(const o of clicks){try{o.stop();}catch{}}clicks.clear();musicStop();players.forEach(v=>v.pause());updateTransport();}
+async function play(){if(busy||!project.clips.length)return;if(playing||playPending){pause();return;}const request=++playRequest;playPending=true;
+ try{await initAudio();if(request!==playRequest||busy||!project.clips.length||document.querySelector('dialog[open]'))return;if(head>=total()-.0001)head=0;startPlayback();}
+ finally{if(request===playRequest)playPending=false;}}
+function pause(){playRequest++;playPending=false;if(playing){let n=nowHead();head=loop&&total()?n%total():Math.min(n,total());}playing=false;clearInterval(metroTimer);for(const o of clicks){try{o.stop();}catch{}}clicks.clear();musicStop();players.forEach(v=>v.pause());updateTransport();}
 function seek(t){pause();head=E.clamp(t,0,Math.max(0,total()-.000001));drawPreview();updateTransport();}
+function skipPreview(amount){if(busy||!project.clips.length||document.querySelector('dialog[open]'))return;const T=total(),resume=playing,position=playing?(loop?nowHead()%T:Math.min(nowHead(),T)):head,next=E.clamp(position+amount,0,T);
+ pause();head=next;if(resume&&next<T)startPlayback();drawPreview();updateTransport();miniPlayer?.flash(amount);}
 function tick(){if(playing&&!busy){const n=nowHead(),T=total();if(!T){pause();}else if(!loop&&n>=T){pause();head=T;updateTransport();}else{const cycle=Math.floor(n/T);head=n%T;if(cycle!==lastLoop){lastLoop=cycle;startMusic(head);}drawPreview();updateTransport();}}
  requestAnimationFrame(tick);}
 async function useBusy(title,fn,{canCancel=true}={}){if(busy)throw Error('Finish the current operation first.');pause();busy=true;cancelled=false;$('busyTitle').textContent=title;$('progressText').textContent='Working on your device…';$('progress').value=0;$('cancelBtn').hidden=!canCancel;$('busyDialog').showModal();
@@ -267,6 +274,67 @@ async function startExport(){await checkSupport();if(!capabilityOK)return;const 
  try{await useBusy('Rendering your movement',async()=>{for(let i=0;i<jobs.length;i++){checkCancel();const result=await renderJob(p,jobs[i],i,jobs.length);complete++;if(jobs.length===1)result.a.click();}progress(1,'Your rendered files are ready.');});
  say(`${complete} rendered file${complete===1?' is':'s are'} ready in “Ready to keep”.`,true);$('downloads').scrollIntoView({behavior:'smooth',block:'nearest'});
  }catch(e){if(cancelled||e.name==='AbortError')say(`Export cancelled. ${complete?`${complete} completed file(s) remain available.`:'Your project is unchanged.'}`,true);else fail(e);}}
+// Keep touch recognition separate from media state so a scroll or drag never
+// becomes a seek. These are the same double-tap thresholds used by JAA.
+function previewTapGestures({rectangle,onSkip,enabled,now=()=>performance.now()}){let pointer=null,tap=null;
+ const reset=()=>{pointer=null;tap=null;};
+ return {reset,down(e){if(!enabled()||!e.isPrimary||e.button!==0||e.altKey){reset();return;}pointer={id:e.pointerId,x:e.clientX,y:e.clientY};},
+ up(e){if(!enabled()||e.altKey||!pointer||pointer.id!==e.pointerId||Math.hypot(e.clientX-pointer.x,e.clientY-pointer.y)>16){reset();return;}pointer=null;
+ const rect=rectangle(),side=e.clientX<rect.left+rect.width/2?-1:1,time=now();
+ if(tap&&time-tap.time<350&&tap.side===side&&Math.hypot(e.clientX-tap.x,e.clientY-tap.y)<55){tap=null;e.preventDefault();onSkip(side*5);}else tap={time,side,x:e.clientX,y:e.clientY};}};
+}
+function floatingPreviewBounds(box,viewport,aspect){const chrome=80,maxWidth=Math.max(80,Math.min(viewport.width-24,(viewport.height-24-chrome)*aspect,640)),minWidth=Math.min(180,maxWidth),width=E.clamp(box.width,minWidth,maxWidth),height=width/aspect+chrome;
+ return {width,x:E.clamp(box.x,viewport.left+12,Math.max(viewport.left+12,viewport.left+viewport.width-width-12)),y:E.clamp(box.y,viewport.top+12,Math.max(viewport.top+12,viewport.top+viewport.height-height-12))};
+}
+function createMiniPlayer(){const stage=$('stage'),frame=$('frame'),canvas=$('preview'),toggle=$('focusBtn');
+ const shell=document.createElement('div');shell.className='jae-preview-shell';shell.id='miniPlayer';stage.insertBefore(shell,frame);
+ const button=(id,text,label,action)=>{const b=document.createElement('button');b.type='button';b.id=id;b.className='quiet small';b.textContent=text;b.title=label;b.setAttribute('aria-label',label);b.addEventListener('click',action);b.addEventListener('keydown',e=>{if(e.key===' ')e.stopPropagation();});return b;};
+ const bar=document.createElement('div');bar.className='jae-float-bar';
+ const grip=button('miniMove','⠿ Preview','Move preview. Drag, or use the arrow keys.',()=>{});grip.className='jae-float-grip quiet small';
+ const returnButton=button('miniReturn','↗','Return to the full preview',()=>{manual=false;dismissed=true;setFloating(false);stage.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});});
+ const closeButton=button('miniClose','×','Hide the mini player until you return to the preview',()=>{manual=false;dismissed=true;setFloating(false);});bar.append(grip,returnButton,closeButton);
+ const controls=document.createElement('div');controls.className='jae-float-controls';
+ const back=button('miniBack','↶ 5s','Back 5 seconds',()=>skipPreview(-5)),playButton=button('miniPlay','▶','Play preview',()=>play().catch(fail)),forward=button('miniForward','5s ↷','Forward 5 seconds',()=>skipPreview(5));
+ const clock=document.createElement('span');clock.className='jae-float-clock';controls.append(back,playButton,forward,clock);
+ const resize=button('miniResize','◢','Resize preview. Drag, or use the arrow keys.',()=>{});resize.className='jae-float-resize quiet';shell.append(bar,frame,controls,resize);
+ const glow=document.createElement('div');glow.className='jae-skip-flash';glow.setAttribute('aria-hidden','true');frame.append(glow);
+ const announcement=document.createElement('span');announcement.className='jae-screen-reader';announcement.setAttribute('role','status');announcement.setAttribute('aria-live','polite');shell.append(announcement);
+ const placeholder=document.createElement('span');placeholder.className='jae-float-placeholder';placeholder.textContent='Preview is floating while you edit';placeholder.hidden=true;stage.append(placeholder);
+ let floating=false,manual=false,sawStageAway=false,dismissed=false,queued=false,placed=false,gesture=null,flashTimer=0,box={x:0,y:0,width:280};
+ const blocked=()=>busy||!project.clips.length||!!document.querySelector('dialog[open]');
+ const viewport=()=>({width:window.visualViewport?.width||innerWidth,height:window.visualViewport?.height||innerHeight,left:window.visualViewport?.offsetLeft||0,top:window.visualViewport?.offsetTop||0});
+ const aspect=()=>canvas.width/canvas.height||9/16;
+ function bounds(){box=floatingPreviewBounds(box,viewport(),aspect());shell.style.left=box.x+'px';shell.style.top=box.y+'px';shell.style.width=box.width+'px';shell.classList.toggle('is-compact',box.width<210);shell.classList.toggle('is-tiny',box.width<150);}
+ function keepStageSize(){const css=getComputedStyle(stage),paddingY=parseFloat(css.paddingTop)+parseFloat(css.paddingBottom),paddingX=parseFloat(css.paddingLeft)+parseFloat(css.paddingRight),width=Math.min(parseFloat(frame.style.width)||258,Math.max(1,stage.clientWidth-paddingX));stage.style.height=Math.max(parseFloat(css.minHeight)||0,width/aspect()+paddingY)+'px';}
+ function setFloating(value){if(value===floating)return;gesture=null;const hadFocus=shell.contains(document.activeElement);
+  if(value){stage.style.height=stage.getBoundingClientRect().height+'px';placeholder.hidden=false;document.body.append(shell);shell.classList.add('is-floating');floating=true;
+   if(!placed){const v=viewport();box.width=Math.min(280,v.width*.62);box.x=v.left+v.width-box.width-16;box.y=v.top+v.height-box.width/aspect()-96;placed=true;}bounds();
+  }else{floating=false;shell.classList.remove('is-floating');for(const property of ['left','top','width'])shell.style.removeProperty(property);stage.insertBefore(shell,placeholder);stage.style.removeProperty('height');placeholder.hidden=true;if(hadFocus)canvas.focus({preventScroll:true});}
+  toggle.setAttribute('aria-pressed',String(floating));toggle.title=floating?'Return preview to the page':'Pop out preview';toggle.setAttribute('aria-label',toggle.title);draw();
+ }
+ function checkFloating(){queued=false;const past=stage.getBoundingClientRect().bottom<=8;
+  if(!past)dismissed=false;if(manual&&past)sawStageAway=true;else if(manual&&sawStageAway&&!past){manual=false;sawStageAway=false;}
+  if(!project.clips.length){manual=false;dismissed=false;placed=false;}
+  setFloating(!blocked()&&(manual||past&&!dismissed));
+ }
+ function schedule(){if(!queued){queued=true;requestAnimationFrame(checkFloating);}}
+ function popOut(){if(blocked())return;if(floating){manual=false;dismissed=true;setFloating(false);}else{manual=true;sawStageAway=stage.getBoundingClientRect().bottom<=8;dismissed=false;setFloating(true);canvas.focus({preventScroll:true});}}
+ function flash(amount){glow.textContent=(amount<0?'−':'+')+Math.abs(amount)+'s';glow.dataset.side=amount<0?'left':'right';glow.classList.remove('is-visible');void glow.offsetWidth;glow.classList.add('is-visible');clearTimeout(flashTimer);flashTimer=setTimeout(()=>glow.classList.remove('is-visible'),750);announcement.textContent=(amount<0?'Back ':'Forward ')+Math.abs(amount)+' seconds';}
+ const taps=previewTapGestures({rectangle:()=>frame.getBoundingClientRect(),enabled:()=>!blocked(),onSkip:skipPreview});
+ frame.addEventListener('pointerdown',taps.down);frame.addEventListener('pointerup',taps.up);frame.addEventListener('pointercancel',taps.reset);
+ canvas.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();e.stopPropagation();skipPreview(e.key==='ArrowLeft'?-5:5);}else if(e.key===' '){e.preventDefault();e.stopPropagation();if(!blocked())play().catch(fail);}});
+ for(const [element,kind] of [[grip,'move'],[resize,'resize']]){
+  element.addEventListener('pointerdown',e=>{if(!floating||blocked()||e.button!==0||!e.isPrimary)return;e.preventDefault();e.stopPropagation();gesture={kind,id:e.pointerId,x:e.clientX,y:e.clientY,box:{...box}};element.setPointerCapture(e.pointerId);});
+  element.addEventListener('pointermove',e=>{if(!gesture||gesture.id!==e.pointerId)return;const dx=e.clientX-gesture.x,dy=e.clientY-gesture.y;if(kind==='move'){box.x=gesture.box.x+dx;box.y=gesture.box.y+dy;}else box.width=gesture.box.width+(Math.abs(dx)>Math.abs(dy)?dx:dy*aspect());bounds();});
+  const end=()=>{gesture=null;};for(const event of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(event,end);
+  element.addEventListener('keydown',e=>{if(!floating||blocked()||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();e.stopPropagation();const amount=e.shiftKey?40:10;if(kind==='resize')box.width+=e.key==='ArrowLeft'||e.key==='ArrowUp'?-amount:amount;else if(e.key==='ArrowLeft'||e.key==='ArrowRight')box.x+=e.key==='ArrowLeft'?-amount:amount;else box.y+=e.key==='ArrowUp'?-amount:amount;bounds();});
+ }
+ function draw(){clock.textContent=$('clock').textContent.replace(/\.\d+$/,'');const disabled=blocked();for(const control of [toggle,back,playButton,forward])control.disabled=disabled;playButton.textContent=playing?'Ⅱ':'▶';playButton.title=playing?'Pause preview':'Play preview';playButton.setAttribute('aria-label',playButton.title);}
+ function sync(){shell.style.setProperty('--jae-inline-width',frame.style.width||'258px');if(floating){keepStageSize();bounds();}draw();schedule();}
+ window.addEventListener('scroll',schedule,{passive:true});const resized=()=>{if(floating){keepStageSize();bounds();}schedule();};window.addEventListener('resize',resized,{passive:true});window.visualViewport?.addEventListener('resize',resized,{passive:true});window.visualViewport?.addEventListener('scroll',resized,{passive:true});
+ if(typeof MutationObserver!=='undefined'){const observer=new MutationObserver(()=>{taps.reset();checkFloating();draw();});for(const dialog of document.querySelectorAll('dialog'))observer.observe(dialog,{attributes:true,attributeFilter:['open']});}
+ return {draw,sync,flash,popOut};
+}
 // All DOM events are registered after the embedded runtime and engine are ready.
 listen('addBtn','click',()=>$('videoInput').click());listen('emptyAdd','click',()=>$('videoInput').click());
 listen('videoInput','change',async e=>{const files=[...e.target.files];e.target.value='';await addVideos(files);});
@@ -286,7 +354,7 @@ listen('metroBtn','click',async()=>{await initAudio();metronome=!metronome;$('me
 listen('metroGrid','change',()=>{if(playing){for(const o of clicks){try{o.stop();}catch{}}clicks.clear();resetMetronome(nowHead());scheduleMetronome();}});
 listen('backBtn','click',()=>{const ss=E.segments(project),i=ss.findIndex(s=>head<s.end-.00001);seek(ss[Math.max(0,i-1)]?.start||0);});
 listen('forwardBtn','click',()=>{const ss=E.segments(project),i=ss.findIndex(s=>head<s.end-.00001);seek(ss[(i+1)%ss.length]?.start||0);});
-listen('scrubber','input',e=>seek(+e.target.value));listen('focusBtn','click',()=>{$('app').classList.toggle('focus-mode');render();});
+listen('scrubber','input',e=>seek(+e.target.value));listen('focusBtn','click',()=>miniPlayer?.popOut());
 for(const id of ['projectName','bpm','meter','defaultBars'])listen(id,'change',e=>{commit(()=>project[id==='projectName'?'name':id]=id==='projectName'?e.target.value:+e.target.value);});
 listen('equalBtn','click',()=>commit(()=>{project.clips.forEach(c=>c.bars=project.defaultBars);head=0;}));
 let taps=[];listen('tapBtn','click',()=>{const now=performance.now();if(taps.length&&now-taps.at(-1)>2000)taps=[];taps.push(now);if(taps.length>8)taps.shift();if(taps.length>=3){const bpm=60e3/((taps.at(-1)-taps[0])/(taps.length-1));commit(()=>project.bpm=Math.round(E.clamp(bpm,30,300)*10)/10);say(`Tap tempo: ${project.bpm} BPM.`);}else say(`Tap ${3-taps.length} more time${3-taps.length===1?'':'s'}.`);});
@@ -304,21 +372,21 @@ for(const el of document.querySelectorAll('[data-clip]')){
 for(const b of document.querySelectorAll('[data-preset]'))b.addEventListener('click',()=>{const c=selectedClip();if(c)commit(()=>{Object.assign(c,E.presets[b.dataset.preset]);c.preset=b.dataset.preset;});});
 listen('momentBtn','click',()=>{const c=selectedClip();if(!c)return;commit(()=>{const a=assets.get(c.asset),need=E.motion(c,project,0).needed;c.trimIn=Math.random()*Math.max(0,a.duration-need);c.trimOut=a.duration;head=clipStart(c.id);});});
 listen('applyMotionBtn','click',()=>{const c=selectedClip();if(!c)return;commit(()=>{const keys=['onset','attack','release','base','peak','slow','zoom','returnZoom','ramp','preset'];for(const o of project.clips)for(const k of keys)o[k]=c[k];});say('Motion copied to all clips. Trims, lengths, and framing were kept.',true);});
-$('preview').addEventListener('click',e=>{const c=selectedClip();if(!c||busy)return;const r=$('preview').getBoundingClientRect();commit(()=>{c.fx=E.clamp((e.clientX-r.left)/r.width,0,1);c.fy=E.clamp((e.clientY-r.top)/r.height,0,1);head=clipStart(c.id);});$('focalMarker').style.left=(c.fx*100)+'%';$('focalMarker').style.top=(c.fy*100)+'%';$('focalMarker').hidden=false;setTimeout(()=>$('focalMarker').hidden=true,900);});
+$('preview').addEventListener('click',e=>{const c=selectedClip();if(!e.altKey||!c||busy||document.querySelector('dialog[open]'))return;const r=$('preview').getBoundingClientRect();commit(()=>{c.fx=E.clamp((e.clientX-r.left)/r.width,0,1);c.fy=E.clamp((e.clientY-r.top)/r.height,0,1);head=clipStart(c.id);});$('focalMarker').style.left=(c.fx*100)+'%';$('focalMarker').style.top=(c.fy*100)+'%';$('focalMarker').hidden=false;setTimeout(()=>$('focalMarker').hidden=true,900);});
 listen('musicBtn','click',()=>$('musicInput').click());listen('musicInput','change',async e=>{const f=e.target.files[0];e.target.value='';if(f)await addMusic(f);});
 listen('removeMusicBtn','click',()=>{pause();music=null;dirty=true;render();});
 for(const id of ['musicOffset','musicVolume'])listen(id,'change',e=>commit(()=>project[id]=+e.target.value));
 for(const id of ['resolution','aspect','fps','quality','format'])listen(id,'change',e=>{commit(()=>project[id]=['resolution','fps'].includes(id)?+e.target.value:e.target.value);checkSupport();});
 for(const id of ['exportScope','exportLoops','includeMusic'])listen(id,'change',()=>{syncExportUI();checkSupport();});
 listen('clearDownloads','click',clearDownloads);
-window.addEventListener('keydown',e=>{if(busy||document.querySelector('dialog[open]')||/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)||e.target.isContentEditable)return;
+window.addEventListener('keydown',e=>{if(busy||document.querySelector('dialog[open]')||/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)||e.target.isContentEditable||!e.ctrlKey&&!e.metaKey&&e.target.closest('button,a,summary'))return;
  if((e.ctrlKey||e.metaKey)&&e.code==='KeyZ'){e.preventDefault();e.shiftKey?redo():undo();}
  else if(e.code==='Space'){e.preventDefault();play().catch(fail);}else if(e.code==='ArrowLeft'){e.preventDefault();seek(head-1/project.fps);}else if(e.code==='ArrowRight'){e.preventDefault();seek(head+1/project.fps);}});
 window.addEventListener('resize',()=>{if(!busy)render();});
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&playing){pause();say('Preview paused while the page was hidden.');}});
 window.addEventListener('beforeunload',e=>{if(dirty||busy){e.preventDefault();e.returnValue='';}});
 // Deliberately small diagnostic API for deterministic automated tests and future development.
-window.JAE={get project(){return project;},get assets(){return assets;},get downloads(){return downloadItems;},get head(){return head;},get playing(){return playing;},loadDemo,addVideos,portableBlob,openPortable,renderJob,render,seek,play,pause,undo,redo,selectClip,checkSupport,core:E};
-render();requestAnimationFrame(tick);
+window.JAE={get project(){return project;},get assets(){return assets;},get downloads(){return downloadItems;},get head(){return head;},get playing(){return playing;},loadDemo,addVideos,portableBlob,openPortable,renderJob,render,seek,skipPreview,play,pause,undo,redo,selectClip,checkSupport,core:E};
+miniPlayer=createMiniPlayer();render();requestAnimationFrame(tick);
 if(!M)say('Media engine missing. Use the complete standalone HTML.',true);
 })();

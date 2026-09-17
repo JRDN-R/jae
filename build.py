@@ -1,6 +1,5 @@
 """Reproducible, network-free assembly after the pinned runtime has been prepared."""
 from pathlib import Path
-import base64
 import hashlib
 import shutil
 import zipfile
@@ -8,27 +7,15 @@ import zipfile
 ROOT = Path(__file__).resolve().parent
 runtime = ROOT / 'runtime'
 lib_path = runtime / 'package/dist/bundles/mediabunny.min.cjs'
-logo_path = runtime / 'jordan-mark.png'
-if not logo_path.exists():
-    # Recover the exact original embedded logo from the committed standalone file.
-    import re
-    embedded = re.search(r'data:image/png;base64,([A-Za-z0-9+/=]+)', (ROOT / 'index.html').read_text())
-    if embedded is None:
-        raise RuntimeError('The standalone HTML does not contain the original logo.')
-    runtime.mkdir(exist_ok=True)
-    logo_path.write_bytes(base64.b64decode(embedded.group(1)))
 for path, expected in [
     (lib_path, 'bebee5632388a5273d219cdd37797264cd6051223476c06678ab2199f82c9a52'),
-    (logo_path, '7144ba173edf7d3eed1b08088fd728ef50765b3e40be59dce62b55aa5922b790'),
 ]:
     actual = hashlib.sha256(path.read_bytes()).hexdigest()
     if actual != expected:
         raise RuntimeError(f'Pinned asset mismatch: {path.name}; expected {expected}, got {actual}')
 
-logo = 'data:image/png;base64,' + base64.b64encode(logo_path.read_bytes()).decode('ascii')
 shell = (ROOT / 'src/shell.html').read_text(encoding='utf-8')
 values = {
-    '@@LOGO@@': logo,
     '@@CSS@@': (ROOT / 'src/style.css').read_text(encoding='utf-8'),
     '@@RUNTIME@@': lib_path.read_text(encoding='utf-8'),
     '@@APP@@': (ROOT / 'src/core.js').read_text(encoding='utf-8') + '\n' + (ROOT / 'src/app.js').read_text(encoding='utf-8'),

@@ -6,7 +6,7 @@ A local video studio with beat-timed cuts, speed ramps, zoom motion, portable pr
 
 Defaults: 130 BPM, two bars per clip, 24 fps, 2160 × 3840 portrait output. Add up to 20 clips. Each clip can have its own duration, motion, trim, framing, and focal point. Export one clip, every clip separately, or the whole arrangement.
 
-`index.html` is the complete standalone application, including branding and the pinned Mediabunny runtime. No install, API key, or media upload is required. Download the HTML to keep an offline copy. Use a current full browser with WebCodecs support; available export codecs and resolutions depend on the device. Unsupported settings are reported rather than silently downgraded.
+`index.html` contains the application and pinned Mediabunny runtime. Branding loads from the adjacent `logo.png`, as a normal image file. No install, API key, or media upload is required. Keep both files together for an offline copy. Use a current full browser with WebCodecs support; available export codecs and resolutions depend on the device. Unsupported settings are reported rather than silently downgraded.
 
 ## Save your work
 
@@ -27,9 +27,18 @@ node tests/core.test.cjs
 node tests/runtime.test.cjs
 node tests/app.test.cjs
 node tests/project.test.cjs
+node tests/player.test.cjs
 ```
 
-The build verifies SHA-256 hashes of the runtime and original embedded logo. It also creates the corresponding unmodified Mediabunny source archive and MPL-2.0 license in `vendor/`. The legacy `bootstrap/` archive is retained for provenance.
+The build verifies the runtime SHA-256 hash. It also creates the corresponding unmodified Mediabunny source archive and MPL-2.0 license in `vendor/`. The legacy `bootstrap/` archive is retained for provenance.
+
+## Release 1.0.2
+
+- Keep the brand and project actions on the same top row, including narrow screens.
+- Load the repository's `logo.png` in the header and favicon without an embedded image URI.
+- Add a JAA-style floating preview with drag, resize, return, and dismiss controls.
+- Double-tap the left or right side to skip five seconds without changing the playing/paused state. Focus the preview and use arrow keys for the same jumps.
+- Use the framing sliders or Alt-click the preview to position the zoom center.
 
 ## Release 1.0.1
 

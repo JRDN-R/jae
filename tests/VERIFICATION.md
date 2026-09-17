@@ -1,4 +1,14 @@
-# Release 1.0.1 verification
+# Release verification
+
+## Release 1.0.2
+
+The 18 existing timing, preview, metronome, decoder, and project-file test groups pass after the player changes. Seven additional groups in `player.test.cjs` cover double-tap recognition, ignored single/drag/cancel/modified gestures, playback-preserving skips, timeline boundaries, busy/modal guards, viewport bounds, and canceled or superseded asynchronous audio startup. Total: 25 passing groups.
+
+Code review confirms that the same live canvas moves between the page and floating player. It is reparented to `body` while floating, with aspect-preserving sizing, compact controls, return/dismiss behavior, and modal guards. The header and favicon reference the tracked `logo.png`; the header actions stay beside the brand through the responsive styles.
+
+The test browser remained unresponsive, so visual desktop/mobile checks and physical touch-device checks of the new player were not completed in this session. The tests above isolate application behavior and do not certify browser layout or device gesture delivery.
+
+## Release 1.0.1
 
 Date: 2026-09-17.
 

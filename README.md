@@ -26,6 +26,7 @@ python3 build.py
 node tests/core.test.cjs
 node tests/runtime.test.cjs
 node tests/app.test.cjs
+node tests/project.test.cjs
 ```
 
 The build verifies SHA-256 hashes of the runtime and original embedded logo. It also creates the corresponding unmodified Mediabunny source archive and MPL-2.0 license in `vendor/`. The legacy `bootstrap/` archive is retained for provenance.
@@ -38,4 +39,4 @@ The build verifies SHA-256 hashes of the runtime and original embedded logo. It 
 - Honor cancellation during export finalization and clean up temporary output.
 - Restore editable source, reproducible build, bundled-library source/license, and regression tests.
 
-Core timing and decoder-loop tests pass. A real 2160 × 3840, 24 fps H.264 MP4 was encoded and inspected. Physical iPhone/Android 4K performance still depends on the device and has not been independently measured.
+All 18 timing, preview, metronome, decoder-loop, and project-file test groups pass. A real 2160 × 3840, 24 fps H.264 MP4 was encoded and inspected. See `tests/VERIFICATION.md` for test scope and remaining device checks.

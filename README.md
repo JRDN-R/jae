@@ -32,6 +32,10 @@ node tests/player.test.cjs
 
 The build verifies the runtime SHA-256 hash. It also creates the corresponding unmodified Mediabunny source archive and MPL-2.0 license in `vendor/`. The legacy `bootstrap/` archive is retained for provenance.
 
+## Release 1.0.3
+
+Each clip now has an X button. A named-clip confirmation offers Cancel or Delete clip, and Undo restores deleted clips. The arrangement Remove button uses the same confirmation.
+
 ## Release 1.0.2
 
 - Keep the brand and project actions on the same top row, including narrow screens.

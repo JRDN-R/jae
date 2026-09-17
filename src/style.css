@@ -43,3 +43,11 @@ body:has(dialog[open]) .jae-preview-shell.is-floating{visibility:hidden}
 .is-floating.is-tiny #miniBack:before{content:'↶';font-size:14px}
 .is-floating.is-tiny #miniForward:before{content:'↷';font-size:14px}
 .is-floating.is-tiny .jae-float-resize{width:16px;height:16px;min-height:16px;font-size:10px}
+
+/* Clip removal is separate from clip selection and dragging. */
+.clip-row{display:flex;align-items:center;width:100%;gap:2px;margin-bottom:4px;min-width:0}
+.clip-row .clip-item{flex:1;width:0;min-width:0;margin:0}
+.clip-row .clip-delete{flex:0 0 36px;width:36px;min-height:44px;padding:0;font-size:22px;font-weight:400;line-height:1;color:var(--muted);cursor:pointer}
+.clip-row .clip-delete:hover{background:#f0a7b312;border-color:#f0a7b333}
+.delete-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}
+@media(max-width:580px){.clip-row{flex:0 0 205px;width:205px}.clip-row .clip-delete{flex-basis:40px;width:40px}}
